@@ -1,0 +1,134 @@
+// Package service keeps the daemon running in the background as a launchd
+// agent: started at login and restarted if it dies.
+package service
+
+import (
+	"fmt"
+	"html"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/dittofleet/go-cli-kit/xdg"
+)
+
+// label names the service to launchd.
+const label = "dev.knockout"
+
+// crosstalk finds its config and socket through these, so the daemon,
+// started by launchd, has to be told them as crosstalk's own was.
+var passedOn = []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME"}
+
+func plistPath() string {
+	return filepath.Join(xdg.Home(), "Library", "LaunchAgents", label+".plist")
+}
+
+// logPath is where the daemon's log goes.
+func logPath() string {
+	return filepath.Join(xdg.Home(), "Library", "Logs", "knockout.log")
+}
+
+func domain() string {
+	return fmt.Sprintf("gui/%d", os.Getuid())
+}
+
+// target names the service itself to launchctl.
+func target() string {
+	return domain() + "/" + label
+}
+
+// installed reports whether the service has been set up on this machine.
+func installed() bool {
+	_, err := os.Stat(plistPath())
+	return err == nil
+}
+
+// Install sets the service up to run binary, and starts it. launchd knows
+// nothing of the shell, so path is the PATH the daemon finds crosstalk and
+// sudo on. Run again, it replaces what was there and restarts the daemon.
+func Install(binary, path string) error {
+	var env strings.Builder
+	for _, name := range passedOn {
+		if value := os.Getenv(name); value != "" {
+			fmt.Fprintf(&env, "    <key>%s</key><string>%s</string>\n", name, html.EscapeString(value))
+		}
+	}
+	// RunAtLoad starts the daemon at login, KeepAlive restarts it if it
+	// dies, and ThrottleInterval keeps a daemon that cannot start from
+	// spinning.
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+    <string>daemon</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>%s</string>
+%s  </dict>
+</dict>
+</plist>
+`, label, html.EscapeString(binary), html.EscapeString(logPath()), html.EscapeString(logPath()), html.EscapeString(path), env.String())
+
+	if err := os.MkdirAll(filepath.Dir(plistPath()), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath()), 0o755); err != nil {
+		return err
+	}
+	// Out with the old one first. There being none is the usual case.
+	exec.Command("launchctl", "bootout", target()).Run()
+	if err := os.WriteFile(plistPath(), []byte(plist), 0o644); err != nil {
+		return err
+	}
+	// launchd refuses a service whose last run is still shutting down, so
+	// right after a bootout this can take a moment to go through.
+	var out []byte
+	var err error
+	for range 10 {
+		if out, err = exec.Command("launchctl", "bootstrap", domain(), plistPath()).CombinedOutput(); err == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return fmt.Errorf("launchctl bootstrap: %s", strings.TrimSpace(string(out)))
+}
+
+// Restart stops the daemon and starts it again, for a new binary. With no
+// service set up it does nothing.
+func Restart() error {
+	if !installed() {
+		return nil
+	}
+	out, err := exec.Command("launchctl", "kickstart", "-k", target()).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("the daemon is still the old version: launchctl kickstart: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Remove stops the daemon and takes the service away. With no service set
+// up it does nothing.
+func Remove() error {
+	if !installed() {
+		return nil
+	}
+	// Stopping one that is not loaded fails, which is fine. One that is
+	// still loaded afterwards is not: it would go on listening.
+	stop := exec.Command("launchctl", "bootout", target()).Run()
+	if stop != nil && exec.Command("launchctl", "print", target()).Run() == nil {
+		return fmt.Errorf("launchctl bootout %s: %w", target(), stop)
+	}
+	return os.Remove(plistPath())
+}
