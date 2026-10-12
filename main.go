@@ -23,7 +23,6 @@ Shuts this Mac down when another of your Macs asks it to, through crosstalk:
 
   crosstalk send <this mac> knockout '{"do":"shutdown"}'
   crosstalk send <this mac> knockout '{"do":"check"}'    # "ready", or why not
-  crosstalk send --all knockout '{"do":"shutdown"}'      # every other Mac
 
 Commands:
   setup                    Listen from login, and allow shutting down

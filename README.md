@@ -42,12 +42,15 @@ installing on the Macs that send.
 ```sh
 crosstalk send <mac> knockout '{"do":"shutdown"}'   # replies "shutting down", then does
 crosstalk send <mac> knockout '{"do":"check"}'      # replies "ready", or why not
-crosstalk send --all knockout '{"do":"shutdown"}'   # every other connected Mac
 ```
 
 Anything else is refused. The reply goes out before the shutdown starts, so
 it arrives. A Mac that is asleep or offline does not get the message, and
 crosstalk says so.
+
+Send to one Mac by name, not with `crosstalk send --all`. A broadcast shuts
+down every other connected Mac that runs knockout, and gets no replies, so
+you cannot tell which ones went down.
 
 Any Mac with your crosstalk key can send these, and so can anything running
 as you on one of them.
